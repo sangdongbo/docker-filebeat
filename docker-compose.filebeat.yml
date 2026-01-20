@@ -1,0 +1,201 @@
+# =============================================================================
+# Docker Compose - Filebeat 服务配置
+# =============================================================================
+# 功能: 采集 Laravel 应用日志并发送到 ELK Stack (Elasticsearch, Logstash, Kibana)
+# 用途: 实现日志的集中化管理、实时监控和分析
+#
+# 使用说明:
+# 1. 确保 docker-elk 已经启动并运行 (Elasticsearch, Logstash, Kibana)
+# 2. 修改 networks.elk_network.name 为你的 ELK 网络名称
+# 3. 修改 volumes 中的日志目录路径为你的 Laravel 项目路径
+# 4. 确保 ./filebeat/filebeat.yml 配置文件已正确配置
+# 5. 运行: docker-compose -f docker-compose.filebeat.yml up -d
+#
+# 故障排查:
+# - 查看日志: docker logs laravel_filebeat -f
+# - 验证配置: docker exec laravel_filebeat filebeat test config
+# - 检查网络: docker network inspect docker-elk_elk
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # -----------------------------------------------------------------------------
+  # Filebeat 服务 - 日志采集器
+  # -----------------------------------------------------------------------------
+  filebeat:
+    # Filebeat 镜像版本 (建议与 Elasticsearch 版本保持一致或接近)
+    # 可选版本: 8.11.0, 8.12.0, 9.0.0 等
+    image: docker.elastic.co/beats/filebeat:8.11.0
+    
+    # 容器名称 (可自定义,建议包含项目名称)
+    container_name: laravel_filebeat
+    
+    # 以 root 用户运行,确保有权限读取日志文件和 Docker socket
+    user: root
+    
+    # -----------------------------------------------------------------------------
+    # 卷挂载配置
+    # -----------------------------------------------------------------------------
+    volumes:
+      # Filebeat 配置文件 (必须)
+      # 路径说明: 
+      # - 左侧: 宿主机相对路径,相对于 docker-compose.yml 文件位置
+      # - 右侧: 容器内固定路径,不要修改
+      # - :ro 表示只读挂载,防止容器修改配置文件
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      
+      # Laravel 日志目录 (必须修改为你的项目路径)
+      # 路径说明:
+      # - 左侧: 修改为你的 Laravel 项目的 storage/logs 绝对路径或相对路径
+      # - 右侧: 容器内路径,需要与 filebeat.yml 中的 paths 配置一致
+      # - :ro 表示只读挂载,Filebeat 只读取日志不修改
+      # 示例: /path/to/your/laravel/storage/logs:/var/log/laravel:ro
+      - ../storage/logs:/var/log/laravel:ro
+      
+      # Filebeat 数据持久化目录 (推荐)
+      # 作用: 保存 Filebeat 的注册表数据,记录已读取的日志文件位置
+      # 好处: 重启容器后不会重复采集已处理的日志
+      - filebeat_data:/usr/share/filebeat/data
+      
+      # Docker socket 挂载 (可选)
+      # 作用: 采集 Docker 容器日志和元数据
+      # 使用场景: 如果需要采集其他容器的日志,取消注释此行
+      # 注意: 需要在 filebeat.yml 中启用 docker 模块
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+    
+    # -----------------------------------------------------------------------------
+    # 环境变量配置
+    # -----------------------------------------------------------------------------
+    environment:
+      # 应用环境 (可选,用于日志标记)
+      # 可选值: local, development, staging, production
+      # 作用: 在日志中添加环境标识,便于区分不同环境的日志
+      - APP_ENV=local
+      
+      # Elasticsearch 连接地址 (可选)
+      # 格式: host:port 或 http://host:port
+      # 说明: 如果 Filebeat 直接发送到 Elasticsearch,需要配置此项
+      # 注意: 当前配置发送到 Logstash,所以此变量未使用
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      
+      # Elasticsearch 认证密码 (可选)
+      # 说明: 如果 Elasticsearch 启用了安全认证,需要配置
+      # 建议: 生产环境使用 Docker secrets 或环境变量文件管理密码
+      - ELASTIC_PASSWORD=Es123456
+    
+    # -----------------------------------------------------------------------------
+    # 网络配置
+    # -----------------------------------------------------------------------------
+    networks:
+      # 连接到 ELK Stack 的 Docker 网络
+      # 注意: 必须与 Elasticsearch、Logstash、Kibana 在同一网络
+      - elk_network
+    
+    # -----------------------------------------------------------------------------
+    # 服务依赖
+    # -----------------------------------------------------------------------------
+    depends_on:
+      # 等待 Logstash 服务就绪后再启动 Filebeat
+      # 作用: 避免 Filebeat 启动时 Logstash 未准备好导致连接失败
+      - logstash_check
+    
+    # -----------------------------------------------------------------------------
+    # 重启策略
+    # -----------------------------------------------------------------------------
+    # unless-stopped: 除非手动停止,否则总是重启容器
+    # 其他选项: no, always, on-failure
+    restart: unless-stopped
+    
+    # -----------------------------------------------------------------------------
+    # 健康检查
+    # -----------------------------------------------------------------------------
+    healthcheck:
+      # 测试命令: 验证 Filebeat 配置文件是否正确
+      test: filebeat test config
+      
+      # 检查间隔: 每 30 秒检查一次
+      interval: 30s
+      
+      # 超时时间: 单次检查超时时间为 10 秒
+      timeout: 10s
+      
+      # 重试次数: 连续失败 3 次后标记为 unhealthy
+      retries: 3
+
+  # -----------------------------------------------------------------------------
+  # Logstash 可用性检查服务 (辅助服务)
+  # -----------------------------------------------------------------------------
+  # 作用: 在 Filebeat 启动前检查 Logstash 是否可用
+  # 原理: 使用 netcat (nc) 工具检测 Logstash 的 5044 端口是否可连接
+  logstash_check:
+    # 使用轻量级 busybox 镜像
+    image: busybox
+    
+    # 容器名称
+    container_name: logstash_check
+    
+    # 检查命令说明:
+    # - nc -z logstash 5044: 测试 Logstash 的 5044 端口是否可连接
+    # - until ... do: 循环检查直到成功
+    # - sleep 5: 每次检查失败后等待 5 秒
+    # 注意: "logstash" 是容器名称或服务名称,需要与 ELK Stack 中的 Logstash 服务名一致
+    # 如果你的 Logstash 容器名是 "docker-elk_logstash_1",修改为:
+    # command: sh -c "until nc -z docker-elk_logstash_1 5044; do echo 'Waiting for Logstash...'; sleep 5; done"
+    command: sh -c "until nc -z logstash 5044; do echo 'Waiting for Logstash...'; sleep 5; done; echo 'Logstash is ready!'"
+    
+    networks:
+      - elk_network
+
+# =============================================================================
+# 卷定义
+# =============================================================================
+volumes:
+  # Filebeat 数据持久化卷
+  # driver: local 表示使用本地存储驱动
+  # 位置: Docker 默认存储位置 (通常在 /var/lib/docker/volumes/)
+  filebeat_data:
+    driver: local
+
+# =============================================================================
+# 网络配置
+# =============================================================================
+networks:
+  elk_network:
+    # external: true 表示使用已存在的外部网络,不创建新网络
+    external: true
+    
+    # 网络名称 (重要: 必须修改为你的 ELK Stack 实际网络名称)
+    # 查看方法: docker network ls | grep elk
+    # 常见命名:
+    # - docker-elk_elk (docker-elk 项目默认)
+    # - elk_default (一些 ELK 项目的默认命名)
+    # - elastic (Elastic 官方 Docker 示例)
+    # 注意: 如果名称不匹配,容器将无法启动并报错: network not found
+    name: docker-elk_elk
+
+# =============================================================================
+# 使用示例
+# =============================================================================
+# 1. 启动服务:
+#    docker-compose -f docker-compose.filebeat.yml up -d
+#
+# 2. 查看日志:
+#    docker-compose -f docker-compose.filebeat.yml logs -f filebeat
+#
+# 3. 停止服务:
+#    docker-compose -f docker-compose.filebeat.yml down
+#
+# 4. 重启服务:
+#    docker-compose -f docker-compose.filebeat.yml restart filebeat
+#
+# 5. 验证配置:
+#    docker exec laravel_filebeat filebeat test config
+#    docker exec laravel_filebeat filebeat test output
+#
+# 6. 查看 Filebeat 状态:
+#    docker-compose -f docker-compose.filebeat.yml ps
+#
+# 7. 进入容器调试:
+#    docker exec -it laravel_filebeat bash
+# =============================================================================

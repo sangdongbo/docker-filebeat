@@ -1,0 +1,417 @@
+# =============================================================================
+# Filebeat 配置文件 - Laravel 日志采集器
+# =============================================================================
+# 功能: 采集 Laravel 应用的日志文件并发送到 Logstash 进行处理
+# 版本: Filebeat 8.11.0
+#
+# 配置说明:
+# - 支持多行日志合并（处理 Laravel 的异常堆栈跟踪）
+# - 自动添加应用标识和环境信息
+# - 支持多种日志文件格式 (laravel.log, api.log, payment.log 等)
+#
+# 修改建议:
+# - 如果日志路径不是 /var/log/laravel/*.log，修改 paths 配置
+# - 如果 Logstash 地址不同，修改 output.logstash.hosts
+# - 如果要直接发送到 Elasticsearch，修改 output 配置
+# =============================================================================
+
+# =============================================================================
+# 输入配置 - 指定要采集的日志文件
+# =============================================================================
+filebeat.inputs:
+
+  # -----------------------------------------------------------------------------
+  # Laravel 日志输入源
+  # -----------------------------------------------------------------------------
+  - type: log
+    # 是否启用此输入源
+    # true: 启用采集, false: 禁用采集
+    enabled: true
+    
+    # 日志文件路径 (支持通配符)
+    # 说明:
+    # - /定义日志发送目标
+# =============================================================================
+# 注意: Filebeat 只能配置一个输出目标，不能同时输出到多个地方
+# 常见选项: output.logstash, output.elasticsearch, output.kafka, output.redis
+
+# -----------------------------------------------------------------------------
+# 方案 1: 输出到 Logstash (推荐)
+# -----------------------------------------------------------------------------
+# 优点:
+# - Logstash 可以进行复杂的日志解析和转换
+# - 支持多种输出目标（同时发送到 ES、Kafka、文件等）
+# - 可以对日志进行过滤、清洗、富化
+# 缺点:
+# - 需要额外的 Logstash 服务
+# - 增加了一层处理，可能有轻微延迟
+output.logstash:
+  # Logstash 服务地址列表（支持负载均衡）
+  全局处理器 - 对所有输入数据进行处理
+# =============================================================================
+# 作用: 在数据发送前进行统一的数据处理和字段管理
+# 注意: 这些处理器对所有 inputs 生效，按照定义顺序执行
+processors:
+  # -----------------------------------------------------------------------------
+  # 添加主机元数据
+  # -----------------------------------------------------------------------------
+  # 作用: 添加 Filebeat 运行主机的信息
+  # 添加的字段包括:
+  #   - host.name: 主机名
+  #   - host.os: 操作系统信息
+  #   - host.architecture: CPU 架构
+  #   - host.ip: 主机 IP 地址
+  #   - host.mac: MAC 地址
+  # 用途: 在多主机环境中识别日志来源
+  - add_host_metadata:
+      # 条件: 当日志没有 "forwarded" 标签时才添加
+      # 避免: 重复添加已经包含主机信息的日志
+      when.not.contains.tags: forwarded
+      
+      # 其他可选配置:
+      # netinfo.enabled: false  # 禁用网络接口信息
+      # cache.ttl: 5m           # 主机信息缓存时间
+      # geo.name: "us-east-1a"  # 自定义地理位置
+  
+  # -----------------------------------------------------------------------------
+  # 添加 Docker 元数据 (容器环境专用)
+  # -----------------------------------------------------------------------------
+  # 作用: 如果 Filebeat 在 Docker 容器中运行，添加容器信息
+  # 添加的字段包括:
+  #   - container.id: 容器 ID
+  #   - container.name: 容器名称
+  #   - container.image.name: 镜像名称
+  #   - container.labels: 容器标签
+  # 要求: 需要挂载 Docker socket (-v /var/run/docker.sock:/var/run/docker.sock)
+  # ~ 表示使用默认配置
+  - add_docker_metadata: ~
+      # 其他可选配置:
+      # host: "unix:///var/run/docker.sock"  # Docker socket 路径
+      # match_source: true                    # 只为容器内的日志添加元数据
+      # match_fields: ["container.id"]        # 用于匹配的字段
+  
+  # -----------------------------------------------------------------------------
+  # 添加 Kubernetes 元数据 (K8s 环境专用)
+  # -----------------------------------------------------------------------------
+  # 作用: 如果在 Kubernetes 中运行，添加 Pod、Namespace 等信息
+  # 使用方法: 取消下面的注释
+  # - add_kubernetes_metadata:
+  #     host: ${NODE_NAME}
+  #     matchers:
+  #       - logs_path:
+  #           logs_path: "/var/log/containers/"
+  
+  # -----------------------------------------------------------------------------
+  # 删除不需要的字段
+  # -----------------------------------------------------------------------------
+  # 作用: 减少数据量，降低存储成本，提高传输效率
+  # 策略: 删除 ECS (Elastic Common Schema) 中不常用的元数据字段
+  - drop_fields:
+      # 要删除的字段列表
+      # 说明:
+      #   - agent.ephemeral_id: 临时 ID，每次重启都变化，通常不需要
+      #   - agent.id: Agent 唯一 ID，如果不需要跟踪特定 Agent 可删除
+      #   - ecs.version: ECS 版本号，通常不需要
+      #   - log.offset: 日志文件偏移量，内部使用，可删除
+      #   - input.type: 输入类型，通常是 "log"，可删除
+      fields: ["agent.ephemeral_id", "agent.id", "ecs.version"]
+      
+      # ignore_missing: true 表示字段不存在时不报错
+      ignore_missing: true
+      
+      # 其他常见的可删除字段 (根据需要取消注释):
+      # - "log.offset"
+      # - "input.type"
+      # - "host.mac"
+      # - "host.architecture"
+  
+  # -----------------------------------------------------------------------------
+  # 其他常用处理器示例 (根据需要取消注释)
+  # -----------------------------------------------------------------------------
+  
+  # 重命名字段
+  # - rename:
+  #     fields:
+  #       - from: "message"
+  #         to: "log_content"
+  
+  # 添加标签
+  # - add_tags:
+  #     tags: ["production", "web-server"]
+  #     target: "tags"
+  
+  # 删除包含特定内容的事件 (日志过滤)
+  # - drop_event:
+  #     when.contains:
+  #       message: "health check"
+  
+  # 解析 JSON 日志
+  # - decode_json_fields:
+  #     fields: ["message"]
+  #     target: ""
+  #     overwrite_keys: true
+  
+  # 字符串截断 (防止过长的日志)
+  # - truncate_fields:
+  #     fields:
+  #       - message
+  #     max_characters: 10000
+  #     fail_on_error: false
+
+# =============================================================================
+# Filebeat 自身日志配置
+# =============================================================================
+# 作用: 配置 Filebeat 自己的运行日志（不是采集的应用日志）
+# 用途: 调试 Filebeat 配置问题，监控 Filebeat 运行状态
+
+# 日志级别
+# 可选值: error, warning, info, debug (按详细程度递增)
+# error: 只记录错误
+# warning: 记录警告和错误
+# info: 记录一般信息、警告和错误 (推荐)
+# debug: 记录所有调试信息 (仅用于故障排查，会产生大量日志)
+logging.level: info
+
+# 是否将日志写入文件
+# true: 写入文件, false: 只输出到 stdout
+logging.to_files: true
+
+# 日志文件配置
+logging.files:
+  # 日志文件目录
+  # 注意: 确保 Filebeat 有写入权限
+  path: /var/log/filebeat
+  
+  # 日志文件名
+  # 实际文件: /var/log/filebeat/filebeat
+  # 轮转后: filebeat-2026-01-20.ndjson
+  name: filebeat
+  
+  # 保留的日志文件数量
+  # 说明: 保留最近 7 个轮转的日志文件，超过的自动删除
+  # 轮转规则: 每天一个新文件 或 文件大小超过 10MB
+  keepfiles: 7
+  
+  # 文件权限 (Unix 格式)
+  # 0644 表示: 所有者可读写，组和其他用户只读
+  permissions: 0644
+  
+  # 其他可选配置:
+  # rotateeverybytes: 10485760  # 10MB，文件大小超过此值时轮转
+  # interval: 24h                # 每 24 小时轮转一次
+
+# 日志输出格式 (可选)
+# logging.json: true           # 使用 JSON 格式输出日志
+# logging.metrics.enabled: true # 启用性能指标日志
+
+# =============================================================================
+# 监控配置
+# =============================================================================
+# 作用: 将 Filebeat 的运行指标发送到 Elasticsearch 进行监控
+# 包括: 采集速率、处理延迟、错误数量、内存使用等
+
+# 是否启用监控
+# false: 禁用（减少资源消耗）
+# true: 启用（推荐生产环境启用）
+monitoring.enabled: false
+
+# 如果启用监控，取消下面的注释并配置:
+# monitoring:
+#   # 启用监控
+#   enabled: true
+#   
+#   # 监控数据发送到 Elasticsearch
+#   elasticsearch:
+#     hosts: ["http://elasticsearch:9200"]
+#     username: "elastic"
+#     password: "${ELASTIC_PASSWORD}"
+#   
+#   # 指标采集间隔
+#   # 默认 10s，生产环境可以设置为 30s 或 60s
+#   # metrics.period: 10s
+#   
+#   # 状态报告间隔
+#   # state.period: 1m
+
+# =============================================================================
+# 性能调优配置 (可选)
+# =============================================================================
+# 根据实际情况调整以下配置以优化性能
+
+# 队列配置
+# queue.mem:
+#   events: 4096         # 内存队列大小（事件数）
+#   flush.min_events: 512  # 最小刷新事件数
+#   flush.timeout: 1s      # 刷新超时时间
+
+# 最大并发数（读取文件的 goroutine 数量）
+# filebeat.max_procs: 1  # 默认为 CPU 核心数，通常不需要修改
+
+# =============================================================================
+# 配置验证和测试命令
+# =============================================================================
+# 验证配置文件语法:
+#   filebeat test config -c filebeat.yml
+#
+# 测试输出连接:
+#   filebeat test output -c filebeat.yml
+#
+# 显示将要采集的文件:
+#   filebeat test inputs -c filebeat.yml
+#
+# 手动运行（前台，用于调试）:
+#   filebeat -e -c filebeat.yml
+#
+# 查看帮助:
+#   filebeat --help
+# =============================================================================at/client.key"
+
+# -----------------------------------------------------------------------------
+# 方案 2: 直接输出到 Elasticsearch (备选)
+# -----------------------------------------------------------------------------
+# 优点:
+# - 架构简单，减少一层处理
+# - 延迟更低，实时性更好
+# - 减少资源消耗（不需要 Logstash）
+# 缺点:
+# - 日志解析能力有限（只能用 Filebeat processors）
+# - 不支持复杂的数据转换
+# - 只能输出到 Elasticsearch
+#
+# 使用方法: 
+# 1. 注释掉上面的 output.logstash 配置
+# 2. 取消下面的注释
+# 3. 修改 hosts、username、password、index 配置
+#
+# output.elasticsearch:
+#   # Elasticsearch 服务地址列表（支持集群）
+#   # 格式: ["http://host1:9200", "http://host2:9200"]
+#   # 注意: 必须包含协议 http:// 或 https://
+#   hosts: ["http://elasticsearch:9200"]
+#   
+#   # 认证配置（如果 ES 启用了安全认证）
+#   username: "elastic"
+#   password: "${ELASTIC_PASSWORD}"
+#   
+#   # 索引名称模板
+#   # %{+yyyy.MM.dd} 会自动替换为日期，如: laravel-logs-2026.01.20
+#   # 作用: 按日期创建索引，便于管理和清理旧数据
+#   # 其他格式:
+#   #   - laravel-logs-%{+yyyy.MM}       按月创建
+#   #   - laravel-logs-%{[fields.env]}   按环境创建
+#   index: "laravel-logs-%{+yyyy.MM.dd}"
+#   
+#   # 索引生命周期管理 (ILM)
+#   # ilm.enabled: false  # 如果不使用 ILM，设置为 false
+#   
+#   # 批量发送配置
+#   # bulk_max_size: 50
+#   
+#   # SSL 配置 (如果 ES 启用了 HTTPS)
+#   # ssl.verification_mode: "none"  # 开发环境可设置为 none
+#   # ssl.certificate_authorities: ["/etc/filebeat/ca.crt"]
+
+# -----------------------------------------------------------------------------
+# 方案 3: 输出到 Kafka (高级)
+# -----------------------------------------------------------------------------
+# 适用场景: 需要将日志发送到 Kafka 进行流处理
+# output.kafka:
+#   hosts: ["kafka1:9092", "kafka2:9092"]
+#   topic: "laravel-logs"
+#   partition.round_robin:
+#     reachable_only: false
+#   compression: gzip
+#   max_message_bytes: 1000000] local.INFO: 消息内容
+    multiline:
+      # 正则模式: 匹配日志行的开始标识
+      # ^\[\d{4}-\d{2}-\d{2} 表示以 [2026-01-20 格式开始的行
+      pattern: '^\[\d{4}-\d{2}-\d{2}'
+      
+      # negate: true 表示"不匹配"pattern 的行
+      # 即: 不以日期开头的行（通常是堆栈跟踪或多行内容）
+      negate: true
+      
+      # match: after 表示将不匹配的行追加到上一条匹配的日志后面
+      # 结果: Laravel 的异常堆栈会被合并到一条日志记录中
+      match: after
+    
+    # -----------------------------------------------------------------------------
+    # 自定义字段
+    # -----------------------------------------------------------------------------
+    # 作用: 为所有日志添加额外的标识字段
+    fields:
+      # 应用标识: 用于区分不同应用的日志
+      # 建议: 修改为你的应用名称，如 "my-app", "order-service" 等
+      app: laravel
+      
+      # 环境标识: 从环境变量 APP_ENV 读取，默认为 local
+      # 可选值: local, development, staging, production
+      # 作用: 在 Kibana 中可以按环境过滤日志
+      environment: ${APP_ENV:local}
+    
+    # fields_under_root: true 表示将自定义字段放在根级别
+    # false: {"fields": {"app": "laravel"}}
+    # true:  {"app": "laravel"}  ← 更简洁
+    fields_under_root: true
+    
+    # -----------------------------------------------------------------------------
+    # 输入级别的处理器
+    # -----------------------------------------------------------------------------
+    # 作用: 在发送前对数据进行处理
+    processors:
+      # 添加日志类型标识
+      - add_fields:
+          # target: '' 表示添加到根级别
+          target: ''
+          fields:
+            # 日志类型: 用于后续的 Logstash 过滤和路由
+            log_type: laravel
+
+# =============================================================================
+# 输出配置 - 发送到 Logstash
+# =============================================================================
+output.logstash:
+  hosts: ["docker-elk_logstash_1:5044"]
+  
+  # 如果 Logstash 不可用，缓冲数据
+  bulk_max_size: 2048
+  timeout: 30s
+
+# 如果直接发送到 Elasticsearch（跳过 Logstash），取消下面的注释
+# output.elasticsearch:
+#   hosts: ["elasticsearch:9200"]
+#   username: "elastic"
+#   password: "${ELASTIC_PASSWORD}"
+#   index: "laravel-logs-%{+yyyy.MM.dd}"
+
+# =============================================================================
+# 通用处理器
+# =============================================================================
+processors:
+  # 添加主机信息
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+  
+  # 添加 Docker 元数据（如果在容器中运行）
+  - add_docker_metadata: ~
+  
+  # 删除不需要的字段以减少数据量
+  - drop_fields:
+      fields: ["agent.ephemeral_id", "agent.id", "ecs.version"]
+      ignore_missing: true
+
+# =============================================================================
+# 日志配置
+# =============================================================================
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644
+
+# =============================================================================
+# 监控配置
+# =============================================================================
+monitoring.enabled: false
