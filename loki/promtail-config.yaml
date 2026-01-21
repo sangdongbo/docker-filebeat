@@ -1,0 +1,37 @@
+# Promtail 配置 - Laravel 日志采集
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Laravel 日志
+  - job_name: laravel
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: laravel
+          app: my-laravel-app
+          __path__: /var/log/laravel/*.log
+    
+    # 解析 Laravel 日志格式
+    pipeline_stages:
+      # 多行日志合并（异常堆栈）
+      - multiline:
+          firstline: '^\[\d{4}-\d{2}-\d{2}'
+          max_wait_time: 3s
+      
+      # 正则提取字段
+      - regex:
+          expression: '^\[(?P<timestamp>.*?)\] (?P<env>\w+)\.(?P<level>\w+): (?P<message>.*)'
+      
+      # 添加标签
+      - labels:
+          level:
+          env:

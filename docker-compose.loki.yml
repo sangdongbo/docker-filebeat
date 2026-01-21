@@ -1,0 +1,76 @@
+# =============================================================================
+# Loki + Grafana + Promtail - 轻量级日志方案
+# =============================================================================
+# 优势: 比 ELK 轻 10 倍，资源消耗低，查询速度快
+# 内存: Loki 200MB + Grafana 200MB + Promtail 50MB = 总共约 500MB
+# 对比: ELK Stack 至少需要 4GB 内存
+#
+# 使用方法:
+# 1. docker-compose -f docker-compose.loki.yml up -d
+# 2. 访问 Grafana: http://localhost:3000 (admin/admin)
+# 3. 已自动配置好 Loki 数据源
+# 4. 导入 Dashboard 或直接在 Explore 查询日志
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # Loki - 日志聚合系统
+  # ---------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml
+      - loki_data:/loki
+    networks:
+      - loki
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Promtail - 日志采集器（类似 Filebeat，但更轻量）
+  # ---------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: promtail
+    volumes:
+      - ./loki/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - ../storage/logs:/var/log/laravel:ro
+    command: -config.file=/etc/promtail/config.yml
+    networks:
+      - loki
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+  # ---------------------------------------------------------------------------
+  # Grafana - 可视化界面
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./loki/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    networks:
+      - loki
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+volumes:
+  loki_data:
+  grafana_data:
+
+networks:
+  loki:
+    driver: bridge

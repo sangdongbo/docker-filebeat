@@ -1,0 +1,101 @@
+# =============================================================================
+# Sentry - 错误追踪方案
+# =============================================================================
+# 优势: 
+# - 专注错误和异常追踪
+# - 自动分组相同错误
+# - 实时告警
+# - 性能监控
+# - Release 追踪
+#
+# 两种方案:
+# 1. 云服务 (推荐): https://sentry.io (免费 5000 错误/月)
+# 2. 自托管: 使用下面的 docker-compose
+#
+# Laravel 集成: composer require sentry/sentry-laravel
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # 使用 Sentry 官方 self-hosted 方案
+  # 完整安装说明: https://develop.sentry.dev/self-hosted/
+  
+  # 简化版 - 只启动核心服务
+  redis:
+    image: redis:7-alpine
+    container_name: sentry_redis
+    volumes:
+      - sentry_redis_data:/data
+    networks:
+      - sentry
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: sentry_postgres
+    environment:
+      POSTGRES_USER: sentry
+      POSTGRES_PASSWORD: sentry
+      POSTGRES_DB: sentry
+    volumes:
+      - sentry_postgres_data:/var/lib/postgresql/data
+    networks:
+      - sentry
+
+  sentry:
+    image: sentry:latest
+    container_name: sentry_web
+    ports:
+      - "9000:9000"
+    environment:
+      SENTRY_SECRET_KEY: 'your-secret-key-here-change-me'
+      SENTRY_POSTGRES_HOST: postgres
+      SENTRY_REDIS_HOST: redis
+      SENTRY_DB_USER: sentry
+      SENTRY_DB_PASSWORD: sentry
+      SENTRY_DB_NAME: sentry
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - sentry
+    volumes:
+      - sentry_data:/var/lib/sentry/files
+
+  # 可选: Sentry Cron（定时任务监控）
+  # sentry-cron:
+  #   image: sentry:latest
+  #   command: run cron
+
+  # 可选: Sentry Worker（后台任务）
+  # sentry-worker:
+  #   image: sentry:latest
+  #   command: run worker
+
+volumes:
+  sentry_redis_data:
+  sentry_postgres_data:
+  sentry_data:
+
+networks:
+  sentry:
+    driver: bridge
+
+# =============================================================================
+# 推荐: 直接使用 Sentry 云服务
+# =============================================================================
+# 1. 注册账号: https://sentry.io
+# 2. 创建项目，选择 Laravel
+# 3. 获取 DSN
+# 4. Laravel 配置:
+#
+#    composer require sentry/sentry-laravel
+#    
+#    # .env
+#    SENTRY_LARAVEL_DSN=your-dsn-here
+#    
+#    # config/sentry.php 已自动发布
+#    
+#    # 测试
+#    php artisan sentry:test
+# =============================================================================
